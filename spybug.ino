@@ -11,10 +11,11 @@
 	SD pin D3 is the chip select pin (must be set manually in pin_ss).
 */
 
-#include <avr/io.h>
-#include <avr/interrupt.h>
-#include <SPI.h>
 #include <SD.h>
+#include <SPI.h>
+#include <avr/interrupt.h>
+#include <avr/io.h>
+#include <avr/wdt.h>
 
 static int serial_putch(char c, FILE *f) {
 	(void)f;
@@ -55,7 +56,20 @@ static int printf(const __FlashStringHelper *fmt, ...) {
 	return ret;
 }
 
-#define die(fmt, ...) { cli(); printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); while(1); }
+static void start_watchdog() {
+	MCUSR &= ~B00001000; /* Clear reset flag. */
+	WDTCSR |= B00011000; /* Prepare prescaler change. */
+	WDTCSR = B00100001; /* Set watchdog timeout to 8s. */
+	// Enable Watchdog Timer
+	WDTCSR |= B01000000;
+	MCUSR = MCUSR & B11110111;
+}
+
+static inline void disable_recording_interrupts() {
+	TIMSK1 &= ~(_BV(OCIE1A) | _BV(OCIE1B));
+}
+
+#define die(fmt, ...) { disable_recording_interrupts(); printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); while(1); }
 #define dbg(fmt, ...) { printf(F("Debug: ")); printf(fmt, ##__VA_ARGS__); }
 
 enum AdcChannel : uint8_t {
@@ -202,6 +216,8 @@ static void wav_write_header(uint32_t nsamples) {
 }
 
 void setup() {
+	// Start Watchdog (wdt_enable() is broken somehow?!)
+	start_watchdog();
 	// Serial Setup
 	Serial.begin(9600); /* Set baud rate. */
 	setup_serial_in_out(); /* Add printf support. */
@@ -217,9 +233,11 @@ void setup() {
 	} while (SD.exists(filename));
 	// Delay Triggering
 #if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
+	wdt_disable(); /* Temporarily disable watchdog. */
 	printf(F("Filename: '%s'.\n"), filename);
 	printf(F("Waiting %u minute%s before starting to record...\n"), RECORDING_DELAY_IN_MINUTES, RECORDING_DELAY_IN_MINUTES == 1 ? "" : "s");
 	delay(60000ul * (unsigned long)(RECORDING_DELAY_IN_MINUTES));
+	start_watchdog(); /* Re-enable watchdog. */
 #endif
 	// Open File
 	file = SD.open(filename, O_READ | O_WRITE | O_CREAT); /* Seeking doesn't seem to work with FILE_WRITE?! */
@@ -255,6 +273,7 @@ void setup() {
 
 void loop() {
 	delay(1000);
+	wdt_reset(); /* Reset watchdog timer. */
 #ifdef DEBUG_RECORDING
 	dbg(F("n=%lu\tavg=%lu\tmin=%d\tmax=%d\n"), dbg_total, dbg_sum / (dbg_samples ? dbg_samples : 1), dbg_min, dbg_max);
 	dbg_sum = 0;
