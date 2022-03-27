@@ -34,17 +34,29 @@ static void setup_serial_in_out() {
 	stdout = stdin = stderr = &serial_in_out;
 }
 
-//#define DEBUG_RECORDING
+static size_t fstrlen(const __FlashStringHelper *s) {
+	PGM_P sp = (PGM_P)s;
+	size_t len = 0;
+	while (pgm_read_byte(sp++))
+		len++;
+	return len;
+}
 
-#define SAMPLE_MODE_U8
-//#define SAMPLE_MODE_S16
+static int printf(const __FlashStringHelper *fmt, ...) {
+	size_t len = fstrlen(fmt);
+	char buf[len + 1];
+	buf[len] = 0;
+	memcpy_P(buf, fmt, len + 1);
 
-//#define ADC_PRESCALE_16 /* Up to ~60kHz. */
-//#define ADC_PRESCALE_32 /* Up to ~27kHz. */
-#define ADC_PRESCALE_64 /* Up to ~18kHz. */
+	va_list args;
+	va_start(args, fmt);
+	int ret = vprintf(buf, args);
+	va_end(args);
+	return ret;
+}
 
-#define die(fmt, ...) { cli(); printf("Fatal: " fmt, ##__VA_ARGS__); Serial.flush(); while(1); }
-#define dbg(fmt, ...) printf("Debug: " fmt, ##__VA_ARGS__);
+#define die(fmt, ...) { cli(); printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); while(1); }
+#define dbg(fmt, ...) { printf(F("Debug: ")); printf(fmt, ##__VA_ARGS__); }
 
 enum AdcChannel : uint8_t {
 	AdcChannel0    = 0,
@@ -60,18 +72,27 @@ enum AdcChannel : uint8_t {
 	AdcChannelGnd  = 15,
 };
 
-const AdcChannel adc_chan = AdcChannel0;
-const uint16_t timer_cmp = 1000; /* 16MHz / 1000 = 16kHz. */
-//const uint16_t timer_cmp = 800; /* 16MHz / 800 = 20kHz. */
-const unsigned long int flush_samples = 64000;
-const int pin_ss = 10;
+//#define DEBUG_RECORDING
+
+//#define SAMPLE_MODE_U8
+#define SAMPLE_MODE_S16
+
+//#define ADC_PRESCALE_16 /* Up to ~60kHz. */
+//#define ADC_PRESCALE_32 /* Up to ~27kHz. */
+#define ADC_PRESCALE_64 /* Up to ~18kHz. */
+
+#define RECORDING_DELAY_IN_MINUTES 0 /* Wait n minutes before starting to record. */
+#define ADC_CHANNEL AdcChannel0
+#define TIMER_COMPARE 1000 /* 16MHz / 1000 = 16kHz. */
+#define FLUSH_SAMPLES 64000 /* Flush WAV file every n samples. */
+#define PIN_SS 10
 
 File file;
 #if defined(SAMPLE_MODE_U8)
-#define SAMPLE_BUF_SIZE 128
+#define SAMPLE_BUF_SIZE 256
 #define SAMPLE_BUF_TYPE uint8_t
 #elif defined(SAMPLE_MODE_S16)
-#define SAMPLE_BUF_SIZE 64
+#define SAMPLE_BUF_SIZE 138
 #define SAMPLE_BUF_TYPE int16_t
 #endif
 volatile SAMPLE_BUF_TYPE sample_buffer[2][SAMPLE_BUF_SIZE];
@@ -94,11 +115,15 @@ ISR(TIMER1_COMPA_vect) {
 		TIMSK1 &= ~_BV(OCIE1A);
 		sei();
 		const size_t bufsz = sizeof(SAMPLE_BUF_TYPE) * samples_in_buffer[!which_buffer];
-		if (file.write((char*)sample_buffer[!which_buffer], bufsz) != bufsz)
-			die("Error writing to SD card!\n");
+		if (file.write((char*)sample_buffer[!which_buffer], bufsz) != bufsz) {
+			printf(F("Lost "));
+			Serial.print((float)samples_hanging / (float)(F_CPU / TIMER_COMPARE)); /* Printf doesn't handle floats. */
+			printf(F(" seconds of recording.\n"));
+			die(F("Error writing to SD card. You can ignore this if you removed the SD card intentionally.\n"));
+		}
 		samples_hanging += samples_in_buffer[!which_buffer];
 		samples_in_buffer[!which_buffer] = 0;
-		if (samples_hanging >= flush_samples) {
+		if (samples_hanging >= FLUSH_SAMPLES) {
 			samples_written += samples_hanging;
 			samples_hanging = 0;
 			wav_write_header(samples_written);
@@ -136,17 +161,17 @@ ISR(TIMER1_COMPB_vect) {
 #endif
 }
 
-void wav_write_header(uint32_t nsamples) {
+static void wav_write_header(uint32_t nsamples) {
 	unsigned long old_pos = file.position();
 
 	if (!file.seek(0))
-		die("Error seeking to position 0!\n");
+		die(F("Error seeking to position 0!\n"));
 
 	const uint16_t channels        = 1;
 	const uint32_t riff_chunk_size = sizeof(SAMPLE_BUF_TYPE) * nsamples * channels + 4 + 24 + 8;
 	const uint32_t fmt_chunk_size  = 16;
 	const uint16_t fmt_tag         = 1; /* 1 = PCM. */
-	const uint32_t sample_rate     = F_CPU / timer_cmp;
+	const uint32_t sample_rate     = F_CPU / TIMER_COMPARE;
 	const uint32_t data_rate       = sizeof(SAMPLE_BUF_TYPE) * channels * sample_rate;
 	const uint16_t block_align     = sizeof(SAMPLE_BUF_TYPE) * channels;
 	const uint16_t bits_per_sample = sizeof(SAMPLE_BUF_TYPE) * 8;
@@ -168,11 +193,11 @@ void wav_write_header(uint32_t nsamples) {
 	// data
 	|| file.write((char*)"data", 4) != 4
 	|| file.write((char*)&data_size, 4) != 4)
-		die("Error writing WAV header to SD card!\n");
+		die(F("Error writing WAV header to SD card!\n"));
 
 	if (old_pos > file.position()) {
 		if(!file.seek(old_pos))
-			die("Error seeking to position %lu!\n", old_pos);
+			die(F("Error seeking to position %lu!\n"), old_pos);
 	}
 }
 
@@ -181,8 +206,8 @@ void setup() {
 	Serial.begin(9600); /* Set baud rate. */
 	setup_serial_in_out(); /* Add printf support. */
 	// SD Card Setup
-	if (!SD.begin(pin_ss))
-		die("Error initializing SD card!\n");
+	if (!SD.begin(PIN_SS))
+		die(F("Error initializing SD card!\n"));
 	// Determine Filename
 	unsigned int filenum = 0;
 	char filename[32];
@@ -190,14 +215,20 @@ void setup() {
 		filenum++;
 		snprintf(filename, 32, "rec_%03u.wav", filenum);
 	} while (SD.exists(filename));
+	// Delay Triggering
+#if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
+	printf(F("Filename: '%s'.\n"), filename);
+	printf(F("Waiting %u minute%s before starting to record...\n"), RECORDING_DELAY_IN_MINUTES, RECORDING_DELAY_IN_MINUTES == 1 ? "" : "s");
+	delay(60000ul * (unsigned long)(RECORDING_DELAY_IN_MINUTES));
+#endif
 	// Open File
 	file = SD.open(filename, O_READ | O_WRITE | O_CREAT); /* Seeking doesn't seem to work with FILE_WRITE?! */
-	printf("Recording to file '%s'.\n", filename);
+	printf(F("Recording to file '%s'.\n"), filename);
 	if (!file)
-		die("Error opening '%s' for writing!\n", filename);
+		die(F("Error opening '%s' for writing!\n"), filename);
 	wav_write_header(0);
 	// ADC Setup
-	DIDR0 |= (0xF & adc_chan); /* Disable digital input. */
+	DIDR0 |= (0xF & ADC_CHANNEL); /* Disable digital input. */
 	ADCSRA = _BV(ADEN) /* Enable ADC. */
 	       | _BV(ADATE) /* Enable auto-trigger. */
 #if defined(ADC_PRESCALE_64) /* Up to ~18kHz. */
@@ -212,24 +243,24 @@ void setup() {
 #if defined(SAMPLE_MODE_U8)
 	      | _BV(ADLAR) /* Left adjust ADC output so we only need to read ADCH. */
 #endif
-		  | (0xF & adc_chan); /* Select our ADC input channel. */
+		  | (0xF & ADC_CHANNEL); /* Select our ADC input channel. */
 	// Timer Setup
 	TCCR1A = _BV(WGM13) | _BV(WGM12) | _BV(WGM11); /* Set timer 1 on A channel to ICR1 fast PWM. (Required to make channel B fire at the correct speed). */
 	TCCR1B = _BV(WGM13) | _BV(WGM12) /* Make timer 1 on B channel compare to ICR1 in CTC (Clear Timer on Compare match) mode. */
 	       | _BV(CS10); /* Set timer prescaler division factor to 1. */
-	ICR1 = timer_cmp; /* Set timer compare value: freqency = CPU frequency (16MHz) / timer_cmp. */
-	TIMSK1 = _BV(OCIE1A)
+	ICR1 = TIMER_COMPARE; /* Set timer compare value: freqency = CPU frequency (16MHz) / TIMER_COMPARE. */
+	TIMSK1 = _BV(OCIE1A)  /* Use interrupt A for updating the data on the SD card. */
 	       | _BV(OCIE1B); /* Enable "Output Compare B Match Interrupt". */
 }
 
 void loop() {
 	delay(1000);
 #ifdef DEBUG_RECORDING
-	dbg("n=%lu\tavg=%lu\tmin=%d\tmax=%d\n", dbg_total, dbg_sum / (dbg_samples ? dbg_samples : 1), dbg_min, dbg_max);
+	dbg(F("n=%lu\tavg=%lu\tmin=%d\tmax=%d\n"), dbg_total, dbg_sum / (dbg_samples ? dbg_samples : 1), dbg_min, dbg_max);
 	dbg_sum = 0;
 	dbg_samples = 0;
 	dbg_min = 32767;
 	dbg_max = -32768;
 #endif
-	printf("samples: written=%lu, hanging=%lu, dropped=%lu\n", samples_written, samples_hanging, samples_dropped);
+	printf(F("samples: written=%lu, hanging=%lu, dropped=%lu\n"), samples_written, samples_hanging, samples_dropped);
 }
