@@ -17,6 +17,29 @@
 #include <avr/io.h>
 #include <avr/wdt.h>
 
+/************************
+ BEGIN USER CONFIGURATION
+ ************************/
+//#define DEBUG_RECORDING
+//#define SERIAL_OUTPUT
+
+#define SAMPLE_MODE_U8
+//#define SAMPLE_MODE_S16
+
+//#define ADC_PRESCALE_16 /* Up to ~60kHz. */
+//#define ADC_PRESCALE_32 /* Up to ~27kHz. */
+#define ADC_PRESCALE_64 /* Up to ~18kHz. */
+
+#define RECORDING_DELAY_IN_MINUTES 0 /* Wait n minutes before starting to record. */
+#define ADC_CHANNEL AdcChannel0
+#define TIMER_COMPARE 1000 /* 16MHz / 1000 = 16kHz. */
+#define FLUSH_SAMPLES 64000 /* Flush WAV file every n samples. */
+#define PIN_SS 10
+/**********************
+ END USER CONFIGURATION
+ **********************/
+
+#ifdef SERIAL_OUTPUT
 static int serial_putch(char c, FILE *f) {
 	(void)f;
 	return Serial.write(c) == 1 ? 0 : 1;
@@ -56,6 +79,16 @@ static int printf(const __FlashStringHelper *fmt, ...) {
 	return ret;
 }
 
+#define die(fmt, ...) { disable_recording_interrupts(); printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); while(1); }
+#define dbg(fmt, ...) { printf(F("Debug: ")); printf(fmt, ##__VA_ARGS__); }
+#define print_special(x) Serial.print(x)
+#else
+#define printf(fmt, ...) {}
+#define die(fmt, ...) { disable_recording_interrupts(); while(1); }
+#define dbg(fmt, ...) {}
+#define print_special(x) {}
+#endif
+
 static void start_watchdog() {
 	MCUSR &= ~B00001000; /* Clear reset flag. */
 	WDTCSR |= B00011000; /* Prepare prescaler change. */
@@ -68,9 +101,6 @@ static void start_watchdog() {
 static inline void disable_recording_interrupts() {
 	TIMSK1 &= ~(_BV(OCIE1A) | _BV(OCIE1B));
 }
-
-#define die(fmt, ...) { disable_recording_interrupts(); printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); while(1); }
-#define dbg(fmt, ...) { printf(F("Debug: ")); printf(fmt, ##__VA_ARGS__); }
 
 enum AdcChannel : uint8_t {
 	AdcChannel0    = 0,
@@ -86,27 +116,12 @@ enum AdcChannel : uint8_t {
 	AdcChannelGnd  = 15,
 };
 
-//#define DEBUG_RECORDING
-
-//#define SAMPLE_MODE_U8
-#define SAMPLE_MODE_S16
-
-//#define ADC_PRESCALE_16 /* Up to ~60kHz. */
-//#define ADC_PRESCALE_32 /* Up to ~27kHz. */
-#define ADC_PRESCALE_64 /* Up to ~18kHz. */
-
-#define RECORDING_DELAY_IN_MINUTES 0 /* Wait n minutes before starting to record. */
-#define ADC_CHANNEL AdcChannel0
-#define TIMER_COMPARE 1000 /* 16MHz / 1000 = 16kHz. */
-#define FLUSH_SAMPLES 64000 /* Flush WAV file every n samples. */
-#define PIN_SS 10
-
 File file;
 #if defined(SAMPLE_MODE_U8)
 #define SAMPLE_BUF_SIZE 256
 #define SAMPLE_BUF_TYPE uint8_t
 #elif defined(SAMPLE_MODE_S16)
-#define SAMPLE_BUF_SIZE 138
+#define SAMPLE_BUF_SIZE 160
 #define SAMPLE_BUF_TYPE int16_t
 #endif
 volatile SAMPLE_BUF_TYPE sample_buffer[2][SAMPLE_BUF_SIZE];
@@ -131,7 +146,7 @@ ISR(TIMER1_COMPA_vect) {
 		const size_t bufsz = sizeof(SAMPLE_BUF_TYPE) * samples_in_buffer[!which_buffer];
 		if (file.write((char*)sample_buffer[!which_buffer], bufsz) != bufsz) {
 			printf(F("Lost "));
-			Serial.print((float)samples_hanging / (float)(F_CPU / TIMER_COMPARE)); /* Printf doesn't handle floats. */
+			print_special((float)samples_hanging / (float)(F_CPU / TIMER_COMPARE)); /* Printf doesn't handle floats. */
 			printf(F(" seconds of recording.\n"));
 			die(F("Error writing to SD card. You can ignore this if you removed the SD card intentionally.\n"));
 		}
@@ -219,8 +234,10 @@ void setup() {
 	// Start Watchdog (wdt_enable() is broken somehow?!)
 	start_watchdog();
 	// Serial Setup
+#ifdef SERIAL_OUTPUT
 	Serial.begin(9600); /* Set baud rate. */
 	setup_serial_in_out(); /* Add printf support. */
+#endif
 	// SD Card Setup
 	if (!SD.begin(PIN_SS))
 		die(F("Error initializing SD card!\n"));
