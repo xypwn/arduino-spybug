@@ -8,7 +8,7 @@
 	CMD (DI) |  D11 (MOSI)
 	D3  (CS) |  D10 (SS)
 	
-	SD pin D3 is the chip select pin (must be set manually in pin_ss).
+	SD pin D3 is the chip select pin (must be set manually in PIN_SS).
 */
 
 #include <SD.h>
