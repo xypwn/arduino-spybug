@@ -89,7 +89,17 @@ static int printf(const __FlashStringHelper *fmt, ...) {
 #define print_special(x) {}
 #endif
 
-static void start_watchdog() {
+#if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
+#include <LowPower.h> /* https://github.com/rocketscream/Low-Power */
+static void low_power_sleep_minutes(unsigned long t) {
+	for (unsigned long i = 0; 8ul * i < 60ul * t; i++) {
+		/* Power down for 8s. */
+		LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
+	}
+}
+#endif
+
+static void start_watchdog_with_full_reset() {
 	MCUSR &= ~B00001000; /* Clear reset flag. */
 	WDTCSR |= B00011000; /* Prepare prescaler change. */
 	WDTCSR = B00100001; /* Set watchdog timeout to 8s. */
@@ -127,13 +137,13 @@ File file;
 volatile SAMPLE_BUF_TYPE sample_buffer[2][SAMPLE_BUF_SIZE];
 volatile bool which_buffer = 0;
 volatile uint16_t samples_in_buffer[2] = {0, 0};
-volatile unsigned long int samples_hanging = 0;
-volatile unsigned long int samples_written = 0;
-volatile unsigned long int samples_dropped = 0;
+volatile unsigned long samples_hanging = 0;
+volatile unsigned long samples_written = 0;
+volatile unsigned long samples_dropped = 0;
 #ifdef DEBUG_RECORDING
-volatile unsigned long int dbg_total = 0;
-volatile unsigned long int dbg_sum = 0;
-volatile unsigned long int dbg_samples = 0;
+volatile unsigned long dbg_total = 0;
+volatile unsigned long dbg_sum = 0;
+volatile unsigned long dbg_samples = 0;
 volatile int16_t dbg_min = 32767;
 volatile int16_t dbg_max = -32768;
 #endif
@@ -231,13 +241,19 @@ static void wav_write_header(uint32_t nsamples) {
 }
 
 void setup() {
-	// Start Watchdog (wdt_enable() is broken somehow?!)
-	start_watchdog();
 	// Serial Setup
 #ifdef SERIAL_OUTPUT
 	Serial.begin(9600); /* Set baud rate. */
 	setup_serial_in_out(); /* Add printf support. */
 #endif
+	// Delay Triggering
+#if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
+	printf(F("Waiting %u minute%s before starting to record...\n"), RECORDING_DELAY_IN_MINUTES, RECORDING_DELAY_IN_MINUTES == 1 ? "" : "s");
+	Serial.flush();
+	low_power_sleep_minutes(RECORDING_DELAY_IN_MINUTES); /* Draws ~12.5mA instead of ~30mA when using delay(). */
+#endif
+	// Start Watchdog (wdt_enable() doesn't fully reset)
+	start_watchdog_with_full_reset();
 	// SD Card Setup
 	if (!SD.begin(PIN_SS))
 		die(F("Error initializing SD card!\n"));
@@ -248,14 +264,6 @@ void setup() {
 		filenum++;
 		snprintf(filename, 32, "rec_%03u.wav", filenum);
 	} while (SD.exists(filename));
-	// Delay Triggering
-#if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
-	wdt_disable(); /* Temporarily disable watchdog. */
-	printf(F("Filename: '%s'.\n"), filename);
-	printf(F("Waiting %u minute%s before starting to record...\n"), RECORDING_DELAY_IN_MINUTES, RECORDING_DELAY_IN_MINUTES == 1 ? "" : "s");
-	delay(60000ul * (unsigned long)(RECORDING_DELAY_IN_MINUTES));
-	start_watchdog(); /* Re-enable watchdog. */
-#endif
 	// Open File
 	file = SD.open(filename, O_READ | O_WRITE | O_CREAT); /* Seeking doesn't seem to work with FILE_WRITE?! */
 	printf(F("Recording to file '%s'.\n"), filename);
