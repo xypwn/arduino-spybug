@@ -30,6 +30,8 @@
 //#define ADC_PRESCALE_32 /* Up to ~27kHz. */
 #define ADC_PRESCALE_64 /* Up to ~18kHz. */
 
+#define U8_EXTRA_PRECISION /* (U8 sampling mode only) use 9th ADC reading bit and chop off 1st bit for more precision (sacrificing half of the bandwidth) */
+
 #define RECORDING_DELAY_IN_MINUTES 0 /* Wait n minutes before starting to record. */
 #define ADC_CHANNEL AdcChannel0
 #define TIMER_COMPARE 1000 /* 16MHz / 1000 = 16kHz. */
@@ -175,9 +177,15 @@ ISR(TIMER1_COMPA_vect) {
 ISR(TIMER1_COMPB_vect) {
 	// Retrieve ADC Value and Write to Buffer
 #if defined(SAMPLE_MODE_U8)
-	uint8_t adcval = ADCH;
-#elif defined(SAMPLE_MODE_S16)
+#ifdef U8_EXTRA_PRECISION
 	uint8_t l = ADCL; /* Read ADC registers. (Order matters!) */
+	uint8_t h = ADCH;
+	uint8_t adcval = (h << 7) | (l >> 1);
+#else
+	uint8_t adcval = ADCH;
+#endif
+#elif defined(SAMPLE_MODE_S16)
+	uint8_t l = ADCL;
 	uint8_t h = ADCH;
 	int16_t adcval = (h << 8) | l;
 	adcval -= 0x0200; /* Make integer signed. */
@@ -283,7 +291,7 @@ void setup() {
 #endif
 	ADCSRB = _BV(ADTS2) | _BV(ADTS0); /* Auto-trigger source select: "Timer/Counter1 Compare Match B". */
 	ADMUX = _BV(REFS0) /* Use AREF pin (VCC by default) as reference voltage. */
-#if defined(SAMPLE_MODE_U8)
+#if defined(SAMPLE_MODE_U8) && !defined(U8_EXTRA_PRECISION)
 	      | _BV(ADLAR) /* Left adjust ADC output so we only need to read ADCH. */
 #endif
 		  | (0xF & ADC_CHANNEL); /* Select our ADC input channel. */
