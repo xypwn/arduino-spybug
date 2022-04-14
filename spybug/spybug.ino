@@ -40,6 +40,9 @@
 //#define DEBUG_RECORDING
 //#define SERIAL_OUTPUT
 
+//#define PIN_COMPONENT_SWITCH 2 /* Use a digital signal to switch on/off the microphone and SD card for less power draw. */
+//#define COMPONENT_SWITCH_ON HIGH
+
 #define SAMPLE_MODE_U8
 //#define SAMPLE_MODE_S16
 
@@ -271,11 +274,23 @@ void setup() {
 	Serial.begin(9600); /* Set baud rate. */
 	setup_serial_in_out(); /* Add printf support. */
 #endif
+	// Component Switch Setup
+#ifdef PIN_COMPONENT_SWITCH
+	pinMode(PIN_COMPONENT_SWITCH, OUTPUT);
+#endif
 	// Delay Triggering
 #if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
+#ifdef PIN_COMPONENT_SWITCH
+	digitalWrite(PIN_COMPONENT_SWITCH, !COMPONENT_SWITCH_ON);
+#endif
 	printf(F("Waiting %u minute%s before starting to record...\n"), RECORDING_DELAY_IN_MINUTES, RECORDING_DELAY_IN_MINUTES == 1 ? "" : "s");
 	Serial.flush();
 	low_power_sleep_minutes(RECORDING_DELAY_IN_MINUTES); /* Draws ~12.5mA instead of ~30mA when using delay(). */
+#endif
+	// Activate Components
+#ifdef PIN_COMPONENT_SWITCH
+	digitalWrite(PIN_COMPONENT_SWITCH, COMPONENT_SWITCH_ON);
+	delay(500); /* Wait for components to initialize. */
 #endif
 	// Start Watchdog (wdt_enable() doesn't fully reset)
 	start_watchdog_with_full_reset();
