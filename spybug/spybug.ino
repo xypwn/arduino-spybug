@@ -412,6 +412,9 @@ void setup() {
 		Serial.flush();
 		/* Using this function, an Arduino Nano (with its voltage regulator and TTL module removed) draws ~6μA. */
 		low_power_sleep_minutes(settings.recording_delay);
+		/* Reset wait time. */
+		settings.recording_delay = 0;
+		save_settings();
 	}
 	// Activate Components
 #ifdef PIN_COMPONENT_SWITCH
