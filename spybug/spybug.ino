@@ -343,7 +343,7 @@ void command_loop() {
 						mins = n;
 					settings.recording_delay = mins;
 					save_settings();
-					printf(F("Set waiting time to %d minutes or "), settings.recording_delay);
+					printf(F("Set waiting time to %lu minutes or "), settings.recording_delay);
 					print_special((float)settings.recording_delay / 60.f);
 					printf(F(" hours.\n"));
 				} else if (n_args == 3 && fstreq(args[1], F("serial"))) {
@@ -364,7 +364,7 @@ void command_loop() {
 				}
 			} else if (fstreq(args[0], F("get"))) {
 				if (n_args == 2 && fstreq(args[1], F("wait"))) {
-					printf(F("Current waiting time: %d minutes or "), settings.recording_delay);
+					printf(F("Current waiting time: %lu minutes or "), settings.recording_delay);
 					print_special((float)settings.recording_delay / 60.f);
 					printf(F(" hours.\n"));
 				} else {
@@ -413,7 +413,7 @@ void setup() {
 #ifdef PIN_COMPONENT_SWITCH
 		digitalWrite(PIN_COMPONENT_SWITCH, !COMPONENT_SWITCH_ON);
 #endif
-		info(F("Sleeping for %u minute%s before starting to record...\n"), settings.recording_delay, settings.recording_delay == 1 ? "" : "s");
+		info(F("Sleeping for %lu minute%s before starting to record...\n"), settings.recording_delay, settings.recording_delay == 1 ? "" : "s");
 		Serial.flush();
 		/* Using this function, an Arduino Nano (with its voltage regulator and TTL module removed) draws ~6μA. */
 		low_power_sleep_minutes(settings.recording_delay);
