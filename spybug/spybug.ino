@@ -28,6 +28,8 @@
 	Out defaults to A0 (AdcChannel0), but can be set manually in ADC_CHANNEL.
 */
 
+#include <EEPROM.h>
+#include <LowPower.h> /* https://github.com/rocketscream/Low-Power */
 #include <SD.h>
 #include <SPI.h>
 #include <avr/interrupt.h>
@@ -38,7 +40,6 @@
  BEGIN USER CONFIGURATION
  ************************/
 //#define DEBUG_RECORDING
-//#define SERIAL_OUTPUT
 
 //#define PIN_COMPONENT_SWITCH 2 /* Use a digital signal to switch on/off the microphone and SD card for less power draw. */
 //#define COMPONENT_SWITCH_ON HIGH
@@ -52,7 +53,6 @@
 
 //#define U8_AMPLIFY_X2 /* (U8 sampling mode only) amplify audio by factor 2. */
 
-#define RECORDING_DELAY_IN_MINUTES 0 /* Wait n minutes before starting to record. */
 #define ADC_CHANNEL AdcChannel0
 #define TIMER_COMPARE 1000 /* 16MHz / 1000 = 16kHz. */
 #define FLUSH_SAMPLES 64000 /* Flush WAV file every n samples. */
@@ -61,7 +61,6 @@
  END USER CONFIGURATION
  **********************/
 
-#ifdef SERIAL_OUTPUT
 static int serial_putch(char c, FILE *f) {
 	(void)f;
 	return Serial.write(c) == 1 ? 0 : 1;
@@ -101,25 +100,29 @@ static int printf(const __FlashStringHelper *fmt, ...) {
 	return ret;
 }
 
-#define die(fmt, ...) { disable_recording_interrupts(); printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); while(1); }
-#define dbg(fmt, ...) { printf(F("Debug: ")); printf(fmt, ##__VA_ARGS__); }
-#define print_special(x) Serial.print(x)
-#else
-#define printf(fmt, ...) {}
-#define die(fmt, ...) { disable_recording_interrupts(); while(1); }
-#define dbg(fmt, ...) {}
-#define print_special(x) {}
-#endif
+static bool fstreq(const char *a, const __FlashStringHelper *b_fsh) {
+	PGM_P b = (PGM_P)b_fsh;
+	while (1) {
+		if (*a != pgm_read_byte(b))
+			return false;
+		if (*a == 0)
+			return true;
+		a++; b++;
+	}
+}
 
-#if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
-#include <LowPower.h> /* https://github.com/rocketscream/Low-Power */
+#define print_special(x) { Serial.print(x); }
+#define die(fmt, ...) { disable_recording_interrupts(); if (settings.serial_log) { printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); } while(1); }
+#define dbg(fmt, ...) { printf(F("Debug: ")); printf(fmt, ##__VA_ARGS__); }
+#define info(fmt, ...) { if (settings.serial_log) printf(fmt, ##__VA_ARGS__); }
+#define info_special(x) { if (settings.serial_log) Serial.print(x); }
+
 static void low_power_sleep_minutes(unsigned long t) {
 	for (unsigned long i = 0; 8ul * i < 60ul * t; i++) {
 		/* Power down for 8s. */
 		LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
 	}
 }
-#endif
 
 static void start_watchdog_with_full_reset() {
 	MCUSR &= ~B00001000; /* Clear reset flag. */
@@ -170,6 +173,16 @@ volatile int16_t dbg_min = 32767;
 volatile int16_t dbg_max = -32768;
 #endif
 
+#define EEADDR_SETTINGS 0x00
+struct EEPROM_Settings {
+	unsigned long recording_delay;
+	bool serial_log;
+};
+EEPROM_Settings settings;
+
+#define load_settings() EEPROM.get(EEADDR_SETTINGS, settings)
+#define save_settings() EEPROM.put(EEADDR_SETTINGS, settings)
+
 ISR(TIMER1_COMPA_vect) {
 	/* Only write to file, if one of the buffers is full (meaning no access conflicts). */
 	if (samples_in_buffer[!which_buffer] == SAMPLE_BUF_SIZE) {
@@ -177,9 +190,9 @@ ISR(TIMER1_COMPA_vect) {
 		sei();
 		const size_t bufsz = sizeof(SAMPLE_BUF_TYPE) * samples_in_buffer[!which_buffer];
 		if (file.write((char*)sample_buffer[!which_buffer], bufsz) != bufsz) {
-			printf(F("Lost "));
-			print_special((float)samples_hanging / (float)(F_CPU / TIMER_COMPARE)); /* Printf doesn't handle floats. */
-			printf(F(" seconds of recording.\n"));
+			info(F("Lost "));
+			info_special((float)samples_hanging / (float)(F_CPU / TIMER_COMPARE)); /* Printf doesn't handle floats. */
+			info(F(" seconds of recording.\n"));
 			die(F("Error writing to SD card. You can ignore this if you removed the SD card intentionally.\n"));
 		}
 		samples_hanging += samples_in_buffer[!which_buffer];
@@ -268,25 +281,116 @@ static void wav_write_header(uint32_t nsamples) {
 	}
 }
 
+void show_help() {
+	printf(F("Commands:\n"));
+	printf(F("  help                               --  Display this page.\n"));
+	printf(F("  get wait                           --  Display current delay setting.\n"));
+	printf(F("  set wait <number> [minutes|hours]  --  Change current delay setting.\n"));
+	printf(F("  set serial [on|off]                --  Write log to serial output.\n"));
+}
+
+void command_loop() {
+	// Process Commands
+	if (Serial.available()) {
+		char args[6][20];
+		size_t len = 0;
+		size_t n_args = 0;
+		int c = getchar();
+		while (c != '\n' && n_args < 4) {
+			if (c == ' ')
+				c = getchar();
+			else {
+				do {
+					args[n_args][len++] = c;
+					c = getchar();
+				} while (c != ' ' && c != '\n' && len < 20-1);
+				args[n_args][len] = 0;
+				len = 0;
+				n_args++;
+			}
+		}
+		if (n_args >= 1) {
+			if (fstreq(args[0], F("set"))) {
+				if ((n_args == 3 || n_args == 4) && fstreq(args[1], F("wait"))) {
+					float n = atof(args[2]);
+					unsigned long mins;
+					if (n_args == 4 && (fstreq(args[3], F("hours")) || fstreq(args[3], F("hour"))))
+						mins = 60.f * n;
+					else
+						mins = n;
+					settings.recording_delay = mins;
+					save_settings();
+					printf(F("Set waiting time to %d minutes or "), settings.recording_delay);
+					print_special((float)settings.recording_delay / 60.f);
+					printf(F(" hours.\n"));
+				} else if (n_args == 3 && fstreq(args[1], F("serial"))) {
+					if (fstreq(args[2], F("on"))) {
+						settings.serial_log = true;
+						save_settings();
+						printf(F("Serial log enabled.\n"));
+					} else if (fstreq(args[2], F("off"))) {
+						settings.serial_log = false;
+						save_settings();
+						printf(F("Serial log disabled.\n"));
+					} else {
+						printf(F("Usage: 'set serial [on|off]'.\n"));
+					}
+				} else {
+					printf(F("Invalid usage of 'set'.\n"));
+					show_help();
+				}
+			} else if (fstreq(args[0], F("get"))) {
+				if (n_args == 2 && fstreq(args[1], F("wait"))) {
+					printf(F("Current waiting time: %d minutes or "), settings.recording_delay);
+					print_special((float)settings.recording_delay / 60.f);
+					printf(F(" hours.\n"));
+				} else {
+					printf(F("Invalid usage of 'get'.\n"));
+					show_help();
+				}
+			} else if (fstreq(args[0], F("help"))) {
+				show_help();
+			} else
+				printf(F("Invalid command: '%s'. Type 'help' for a list of commands.\n"), args[0]);
+		} else {
+			printf(F("Please specify a command. Type 'help' for a list of commands.\n"));
+		}
+	}
+}
+
 void setup() {
 	// Serial Setup
-#ifdef SERIAL_OUTPUT
 	Serial.begin(9600); /* Set baud rate. */
 	setup_serial_in_out(); /* Add printf support. */
-#endif
+	// Load EEPROM Data
+	load_settings();
+	// Handle Commands
+	info(F("Type anything in the next 4s to enter command mode.\n"));
+	for (size_t i = 0; i < 4 * 4; i++) {
+		if (Serial.available()) {
+			printf(F("You are now in command mode. Reset to exit. Type 'help' for a list of commands.\n"));
+			while (Serial.available()) Serial.read();
+			while (1) {
+				command_loop();
+				delay(50);
+			}
+		}
+		delay(250);
+	}
 	// Component Switch Setup
 #ifdef PIN_COMPONENT_SWITCH
 	pinMode(PIN_COMPONENT_SWITCH, OUTPUT);
 #endif
-	// Delay Triggering
-#if defined(RECORDING_DELAY_IN_MINUTES) && RECORDING_DELAY_IN_MINUTES != 0
+	// Delayed Triggering
+	if (settings.recording_delay) {
 #ifdef PIN_COMPONENT_SWITCH
-	digitalWrite(PIN_COMPONENT_SWITCH, !COMPONENT_SWITCH_ON);
+		digitalWrite(PIN_COMPONENT_SWITCH, !COMPONENT_SWITCH_ON);
 #endif
-	printf(F("Waiting %u minute%s before starting to record...\n"), RECORDING_DELAY_IN_MINUTES, RECORDING_DELAY_IN_MINUTES == 1 ? "" : "s");
-	Serial.flush();
-	low_power_sleep_minutes(RECORDING_DELAY_IN_MINUTES); /* Draws ~12.5mA instead of ~30mA when using delay(). */
-#endif
+		info(F("Sleeping for %u minute%s before starting to record...\n"), settings.recording_delay, settings.recording_delay == 1 ? "" : "s");
+		Serial.flush();
+		/* Using this function, an Arduino Nano (with its voltage regulator and TTL module removed) draws ~6μA. */
+		low_power_sleep_minutes(settings.recording_delay);
+	}
 	// Activate Components
 #ifdef PIN_COMPONENT_SWITCH
 	digitalWrite(PIN_COMPONENT_SWITCH, COMPONENT_SWITCH_ON);
@@ -306,7 +410,7 @@ void setup() {
 	} while (SD.exists(filename));
 	// Open File
 	file = SD.open(filename, O_READ | O_WRITE | O_CREAT); /* Seeking doesn't seem to work with FILE_WRITE?! */
-	printf(F("Recording to file '%s'.\n"), filename);
+	info(F("Recording to file '%s'.\n"), filename);
 	if (!file)
 		die(F("Error opening '%s' for writing!\n"), filename);
 	wav_write_header(0);
@@ -337,7 +441,7 @@ void setup() {
 }
 
 void loop() {
-	delay(1000);
+	delay(2000);
 	wdt_reset(); /* Reset watchdog timer. */
 #ifdef DEBUG_RECORDING
 	dbg(F("n=%lu\tavg=%lu\tmin=%d\tmax=%d\n"), dbg_total, dbg_sum / (dbg_samples ? dbg_samples : 1), dbg_min, dbg_max);
@@ -346,5 +450,5 @@ void loop() {
 	dbg_min = 32767;
 	dbg_max = -32768;
 #endif
-	printf(F("samples: written=%lu, hanging=%lu, dropped=%lu\n"), samples_written, samples_hanging, samples_dropped);
+	info(F("samples: written=%lu, hanging=%lu, dropped=%lu\n"), samples_written, samples_hanging, samples_dropped);
 }

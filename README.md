@@ -2,8 +2,6 @@
 
 A simple voice recorder for Arduino using an SD card and an electret microphone amplifier circuit.
 
-Independent of any 3rd party libraries (unless delayed recording is used).
-
 ## Wiring (also documented in spybug/spybug.ino)
 ### SD Card Wiring
 SD       | Nano
