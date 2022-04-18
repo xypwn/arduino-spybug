@@ -29,12 +29,12 @@
 */
 
 #include <EEPROM.h>
-#include <LowPower.h> /* https://github.com/rocketscream/Low-Power */
 #include <SD.h>
 #include <SPI.h>
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <avr/wdt.h>
+#include <avr/sleep.h>
 
 /************************
  BEGIN USER CONFIGURATION
@@ -60,6 +60,8 @@
 /**********************
  END USER CONFIGURATION
  **********************/
+
+void (*full_reset)() = nullptr;
 
 static int serial_putch(char c, FILE *f) {
 	(void)f;
@@ -117,20 +119,40 @@ static bool fstreq(const char *a, const __FlashStringHelper *b_fsh) {
 #define info(fmt, ...) { if (settings.serial_log) printf(fmt, ##__VA_ARGS__); }
 #define info_special(x) { if (settings.serial_log) Serial.print(x); }
 
-static void low_power_sleep_minutes(unsigned long t) {
-	for (unsigned long i = 0; 8ul * i < 60ul * t; i++) {
-		/* Power down for 8s. */
-		LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
-	}
+volatile bool wdt_int_sleep_mode = false;
+ISR (WDT_vect) {
+	if (wdt_int_sleep_mode)
+		wdt_disable();
+	else
+		full_reset();
 }
 
-static void start_watchdog_with_full_reset() {
-	MCUSR &= ~B00001000; /* Clear reset flag. */
-	WDTCSR |= B00011000; /* Prepare prescaler change. */
-	WDTCSR = B00100001; /* Set watchdog timeout to 8s. */
-	// Enable Watchdog Timer
-	WDTCSR |= B01000000;
-	MCUSR = MCUSR & B11110111;
+/* Based on https://github.com/rocketscream/Low-Power. */
+static void low_power_sleep_minutes(unsigned long t) {
+	wdt_int_sleep_mode = true;
+	ADCSRA &= ~(1 << ADEN); /* Disable ADC. */
+	for (unsigned long i = 0; 8ul * i < 60ul * t; i++) {
+		// Power Down for 8s
+		wdt_enable(WDTO_8S);   /* Start watchdog timer for 8s. */
+		WDTCSR |= (1 << WDIE); /* Enable watchdog interrupt. */
+		do {
+			set_sleep_mode(SLEEP_MODE_PWR_SAVE);
+			cli();
+			sleep_enable();
+			sleep_bod_disable();
+			sei();
+			sleep_cpu();
+			sleep_disable();
+			sei();
+		} while (0);
+	}
+	ADCSRA |= (1 << ADEN); /* Re-enable ADC. */
+	wdt_int_sleep_mode = false;
+}
+
+static void wdt_enable_with_full_reset() {
+	wdt_enable(WDTO_8S);   /* Start watchdog timer for 8s. */
+	WDTCSR |= (1 << WDIE); /* Enable watchdog interrupt. */
 }
 
 static inline void disable_recording_interrupts() {
@@ -397,7 +419,7 @@ void setup() {
 	delay(500); /* Wait for components to initialize. */
 #endif
 	// Start Watchdog (wdt_enable() doesn't fully reset)
-	start_watchdog_with_full_reset();
+	wdt_enable_with_full_reset();
 	// SD Card Setup
 	if (!SD.begin(PIN_SS))
 		die(F("Error initializing SD card!\n"));
@@ -439,6 +461,7 @@ void setup() {
 	TIMSK1 = _BV(OCIE1A)  /* Use interrupt A for updating the data on the SD card. */
 	       | _BV(OCIE1B); /* Enable "Output Compare B Match Interrupt". */
 }
+
 
 void loop() {
 	delay(2000);
