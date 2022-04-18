@@ -34,4 +34,4 @@ Out defaults to A0 (AdcChannel0), but can be set manually in `ADC_CHANNEL`.
 Mode      | Unmodified | No voltage regulator | No TTL module or voltage regulator
 ----------|------------|----------------------|-----------------------------------
 Waiting   | ~10mA      | ~5.8mA               | ~6μA
-Recording | ~26mA      | ~25.1mA              | ~25mA
+Recording | ~30mA      | ~25.1mA              | ~25mA
