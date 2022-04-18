@@ -140,7 +140,7 @@ static void low_power_sleep_minutes(unsigned long t) {
 		wdt_enable(WDTO_8S);   /* Start watchdog timer for 8s. */
 		WDTCSR |= (1 << WDIE); /* Enable watchdog interrupt. */
 		do {
-			set_sleep_mode(SLEEP_MODE_PWR_SAVE);
+			set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 			cli();
 			sleep_enable();
 			sleep_bod_disable();
