@@ -61,6 +61,10 @@
  END USER CONFIGURATION
  **********************/
 
+#if !defined(__AVR_ATmega328P__) || F_CPU != 16000000
+#error "This program only works on ATmega328P devices with a clock frequency of 16MHz!"
+#endif
+
 void (*full_reset)() = nullptr;
 
 static int serial_putch(char c, FILE *f) {
