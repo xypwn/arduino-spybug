@@ -306,6 +306,7 @@ static void wav_write_header(uint32_t nsamples) {
 void show_help() {
 	printf(F("Commands:\n"));
 	printf(F("  help                               --  Display this page.\n"));
+	printf(F("  exit                               --  Leave command mode.\n"));
 	printf(F("  get wait                           --  Display current delay setting.\n"));
 	printf(F("  set wait <number> [minutes|hours]  --  Change current delay setting.\n"));
 	printf(F("  set serial [on|off]                --  Write log to serial output.\n"));
@@ -372,6 +373,10 @@ void command_loop() {
 				}
 			} else if (fstreq(args[0], F("help"))) {
 				show_help();
+			} else if (fstreq(args[0], F("exit"))) {
+				printf(F("Bye!\n"));
+				Serial.flush();
+				full_reset();
 			} else
 				printf(F("Invalid command: '%s'. Type 'help' for a list of commands.\n"), args[0]);
 		} else {
