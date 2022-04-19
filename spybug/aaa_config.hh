@@ -24,6 +24,8 @@
 #define TIMER_COMPARE 1000 /* 16MHz / 1000 = 16kHz. */
 #define FLUSH_SAMPLES 64000 /* Flush WAV file every n samples. */
 #define PIN_SS 10
+
+#define REC_FILE_FMT "REC_%03u.WAV" /* Must be all caps; must use %u in some form exactly once. */
 /**********************
  END USER CONFIGURATION
  **********************/

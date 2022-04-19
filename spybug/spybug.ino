@@ -30,67 +30,17 @@
 
 #include <SD.h>
 #include <SPI.h>
-#include <avr/interrupt.h>
-#include <avr/io.h>
-#include <avr/wdt.h>
-#include <avr/sleep.h>
 
 #include "aaa_config.hh"
+#include "cmd.hh"
 #include "fstr.hh"
 #include "io.hh"
 #include "settings.hh"
+#include "sys.hh"
 
 #if !defined(__AVR_ATmega328P__) || F_CPU != 16000000
 #error "This program only works on ATmega328P devices with a clock frequency of 16MHz!"
 #endif
-
-void (*full_reset)() = nullptr;
-
-#define print_special(x) { Serial.print(x); }
-#define die(fmt, ...) { disable_recording_interrupts(); if (settings.serial_log) { printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); } while(1); }
-#define dbg(fmt, ...) { printf(F("Debug: ")); printf(fmt, ##__VA_ARGS__); }
-#define info(fmt, ...) { if (settings.serial_log) printf(fmt, ##__VA_ARGS__); }
-#define info_special(x) { if (settings.serial_log) Serial.print(x); }
-
-volatile bool wdt_int_sleep_mode = false;
-ISR (WDT_vect) {
-	if (wdt_int_sleep_mode)
-		wdt_disable();
-	else
-		full_reset();
-}
-
-/* Based on https://github.com/rocketscream/Low-Power. */
-static void low_power_sleep_minutes(unsigned long t) {
-	wdt_int_sleep_mode = true;
-	ADCSRA &= ~_BV(ADEN); /* Disable ADC. */
-	for (unsigned long i = 0; 8ul * i < 60ul * t; i++) {
-		// Power Down for 8s
-		wdt_enable(WDTO_8S);   /* Start watchdog timer for 8s. */
-		WDTCSR |= (1 << WDIE); /* Enable watchdog interrupt. */
-		do {
-			set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-			cli();
-			sleep_enable();
-			sleep_bod_disable();
-			sei();
-			sleep_cpu();
-			sleep_disable();
-			sei();
-		} while (0);
-	}
-	ADCSRA |= _BV(ADEN); /* Re-enable ADC. */
-	wdt_int_sleep_mode = false;
-}
-
-static void wdt_enable_with_full_reset() {
-	wdt_enable(WDTO_8S);   /* Start watchdog timer for 8s. */
-	WDTCSR |= (1 << WDIE); /* Enable watchdog interrupt. */
-}
-
-static inline void disable_recording_interrupts() {
-	TIMSK1 &= ~(_BV(OCIE1A) | _BV(OCIE1B));
-}
 
 enum AdcChannel : uint8_t {
 	AdcChannel0    = 0,
@@ -106,7 +56,6 @@ enum AdcChannel : uint8_t {
 	AdcChannelGnd  = 15,
 };
 
-EEPROM_Settings_Class settings;
 File file;
 #if defined(SAMPLE_MODE_U8)
 #define SAMPLE_BUF_SIZE 256
@@ -227,111 +176,23 @@ static void wav_write_header(uint32_t nsamples) {
 	}
 }
 
-void show_help() {
-	printf(F("Commands:\n"));
-	printf(F("  help                               --  Display this page.\n"));
-	printf(F("  exit                               --  Leave command mode.\n"));
-	printf(F("  get wait                           --  Display current delay setting.\n"));
-	printf(F("  set wait <number> [minutes|hours]  --  Change current delay setting.\n"));
-	printf(F("  set serial [on|off]                --  Write log to serial output.\n"));
-}
-
-void command_loop() {
-	// Process Commands
-	if (Serial.available()) {
-		char args[6][20];
-		size_t len = 0;
-		size_t n_args = 0;
-		int c = getchar();
-		while (c != '\n' && n_args < 4) {
-			if (c == ' ')
-				c = getchar();
-			else {
-				do {
-					args[n_args][len++] = c;
-					c = getchar();
-				} while (c != ' ' && c != '\n' && len < 20-1);
-				args[n_args][len] = 0;
-				len = 0;
-				n_args++;
-			}
-		}
-		if (n_args >= 1) {
-			if (fstreq(args[0], F("set"))) {
-				if ((n_args == 3 || n_args == 4) && fstreq(args[1], F("wait"))) {
-					float n = atof(args[2]);
-					unsigned long mins;
-					if (n_args == 4 && (fstreq(args[3], F("hours")) || fstreq(args[3], F("hour"))))
-						mins = 60.f * n;
-					else
-						mins = n;
-					settings.recording_delay = mins;
-					settings.save();
-					printf(F("Set waiting time to %lu minutes or "), settings.recording_delay);
-					print_special((float)settings.recording_delay / 60.f);
-					printf(F(" hours.\n"));
-				} else if (n_args == 3 && fstreq(args[1], F("serial"))) {
-					if (fstreq(args[2], F("on"))) {
-						settings.serial_log = true;
-						settings.save();
-						printf(F("Serial log enabled.\n"));
-					} else if (fstreq(args[2], F("off"))) {
-						settings.serial_log = false;
-						settings.save();
-						printf(F("Serial log disabled.\n"));
-					} else {
-						printf(F("Usage: 'set serial [on|off]'.\n"));
-					}
-				} else {
-					printf(F("Invalid usage of 'set'.\n"));
-					show_help();
-				}
-			} else if (fstreq(args[0], F("get"))) {
-				if (n_args == 2 && fstreq(args[1], F("wait"))) {
-					printf(F("Current waiting time: %lu minutes or "), settings.recording_delay);
-					print_special((float)settings.recording_delay / 60.f);
-					printf(F(" hours.\n"));
-				} else {
-					printf(F("Invalid usage of 'get'.\n"));
-					show_help();
-				}
-			} else if (fstreq(args[0], F("help"))) {
-				show_help();
-			} else if (fstreq(args[0], F("exit"))) {
-				printf(F("Bye!\n"));
-				Serial.flush();
-				full_reset();
-			} else
-				printf(F("Invalid command: '%s'. Type 'help' for a list of commands.\n"), args[0]);
-		} else {
-			printf(F("Please specify a command. Type 'help' for a list of commands.\n"));
-		}
-	}
-}
-
 void setup() {
 	// Serial Setup
 	Serial.begin(9600); /* Set baud rate. */
 	io_setup(); /* Add printf support. */
+	// Component Switch Setup
+#ifdef PIN_COMPONENT_SWITCH
+	pinMode(PIN_COMPONENT_SWITCH, OUTPUT);
+#endif
 	// Load EEPROM Data
 	settings.load();
 	// Handle Commands
 	info(F("Type anything in the next 4s to enter command mode.\n"));
 	for (size_t i = 0; i < 4 * 4; i++) {
-		if (Serial.available()) {
-			printf(F("You are now in command mode. Reset to exit. Type 'help' for a list of commands.\n"));
-			while (Serial.available()) Serial.read();
-			while (1) {
-				command_loop();
-				delay(50);
-			}
-		}
+		if (Serial.available())
+			cmd();
 		delay(250);
 	}
-	// Component Switch Setup
-#ifdef PIN_COMPONENT_SWITCH
-	pinMode(PIN_COMPONENT_SWITCH, OUTPUT);
-#endif
 	// Delayed Triggering
 	if (settings.recording_delay) {
 #ifdef PIN_COMPONENT_SWITCH
@@ -360,7 +221,7 @@ void setup() {
 	char filename[32];
 	do {
 		filenum++;
-		snprintf(filename, 32, "rec_%03u.wav", filenum);
+		snprintf(filename, 32, REC_FILE_FMT, filenum);
 	} while (SD.exists(filename));
 	// Open File
 	file = SD.open(filename, O_READ | O_WRITE | O_CREAT); /* Seeking doesn't seem to work with FILE_WRITE?! */

@@ -13,3 +13,5 @@ struct EEPROM_Settings_Class {
 	inline void load() { EEPROM.get(EEADDR_SETTINGS, *this); }
 	inline void save() { EEPROM.put(EEADDR_SETTINGS, *this); }
 };
+
+extern EEPROM_Settings_Class settings;
