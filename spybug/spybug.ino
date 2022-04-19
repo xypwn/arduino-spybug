@@ -28,7 +28,6 @@
 	Out defaults to A0 (AdcChannel0), but can be set manually in ADC_CHANNEL.
 */
 
-#include <EEPROM.h>
 #include <SD.h>
 #include <SPI.h>
 #include <avr/interrupt.h>
@@ -36,86 +35,16 @@
 #include <avr/wdt.h>
 #include <avr/sleep.h>
 
-/************************
- BEGIN USER CONFIGURATION
- ************************/
-//#define DEBUG_RECORDING
-
-//#define PIN_COMPONENT_SWITCH 2 /* Use a digital signal to switch on/off the microphone and SD card for less power draw. */
-//#define COMPONENT_SWITCH_ON HIGH
-
-#define SAMPLE_MODE_U8
-//#define SAMPLE_MODE_S16
-
-//#define ADC_PRESCALE_16 /* Up to ~60kHz. */
-//#define ADC_PRESCALE_32 /* Up to ~27kHz. */
-#define ADC_PRESCALE_64 /* Up to ~18kHz. */
-
-//#define U8_AMPLIFY_X2 /* (U8 sampling mode only) amplify audio by factor 2. */
-
-#define ADC_CHANNEL AdcChannel0
-#define TIMER_COMPARE 1000 /* 16MHz / 1000 = 16kHz. */
-#define FLUSH_SAMPLES 64000 /* Flush WAV file every n samples. */
-#define PIN_SS 10
-/**********************
- END USER CONFIGURATION
- **********************/
+#include "aaa_config.hh"
+#include "fstr.hh"
+#include "io.hh"
+#include "settings.hh"
 
 #if !defined(__AVR_ATmega328P__) || F_CPU != 16000000
 #error "This program only works on ATmega328P devices with a clock frequency of 16MHz!"
 #endif
 
 void (*full_reset)() = nullptr;
-
-static int serial_putch(char c, FILE *f) {
-	(void)f;
-	return Serial.write(c) == 1 ? 0 : 1;
-}
-
-static int serial_getch(FILE *f) {
-	(void)f;
-	while(Serial.available() == 0);
-	return Serial.read();
-}
-
-static FILE serial_in_out;
-
-static void setup_serial_in_out() {
-	fdev_setup_stream(&serial_in_out, serial_putch, serial_getch, _FDEV_SETUP_RW);
-	stdout = stdin = stderr = &serial_in_out;
-}
-
-static size_t fstrlen(const __FlashStringHelper *s) {
-	PGM_P sp = (PGM_P)s;
-	size_t len = 0;
-	while (pgm_read_byte(sp++))
-		len++;
-	return len;
-}
-
-static int printf(const __FlashStringHelper *fmt, ...) {
-	size_t len = fstrlen(fmt);
-	char buf[len + 1];
-	buf[len] = 0;
-	memcpy_P(buf, fmt, len + 1);
-
-	va_list args;
-	va_start(args, fmt);
-	int ret = vprintf(buf, args);
-	va_end(args);
-	return ret;
-}
-
-static bool fstreq(const char *a, const __FlashStringHelper *b_fsh) {
-	PGM_P b = (PGM_P)b_fsh;
-	while (1) {
-		if (*a != pgm_read_byte(b))
-			return false;
-		if (*a == 0)
-			return true;
-		a++; b++;
-	}
-}
 
 #define print_special(x) { Serial.print(x); }
 #define die(fmt, ...) { disable_recording_interrupts(); if (settings.serial_log) { printf(F("Fatal: ")); printf(fmt, ##__VA_ARGS__); Serial.flush(); } while(1); }
@@ -177,6 +106,7 @@ enum AdcChannel : uint8_t {
 	AdcChannelGnd  = 15,
 };
 
+EEPROM_Settings_Class settings;
 File file;
 #if defined(SAMPLE_MODE_U8)
 #define SAMPLE_BUF_SIZE 256
@@ -198,16 +128,6 @@ volatile unsigned long dbg_samples = 0;
 volatile int16_t dbg_min = 32767;
 volatile int16_t dbg_max = -32768;
 #endif
-
-#define EEADDR_SETTINGS 0x00
-struct EEPROM_Settings {
-	unsigned long recording_delay;
-	bool serial_log;
-};
-EEPROM_Settings settings;
-
-#define load_settings() EEPROM.get(EEADDR_SETTINGS, settings)
-#define save_settings() EEPROM.put(EEADDR_SETTINGS, settings)
 
 ISR(TIMER1_COMPA_vect) {
 	/* Only write to file, if one of the buffers is full (meaning no access conflicts). */
@@ -346,18 +266,18 @@ void command_loop() {
 					else
 						mins = n;
 					settings.recording_delay = mins;
-					save_settings();
+					settings.save();
 					printf(F("Set waiting time to %lu minutes or "), settings.recording_delay);
 					print_special((float)settings.recording_delay / 60.f);
 					printf(F(" hours.\n"));
 				} else if (n_args == 3 && fstreq(args[1], F("serial"))) {
 					if (fstreq(args[2], F("on"))) {
 						settings.serial_log = true;
-						save_settings();
+						settings.save();
 						printf(F("Serial log enabled.\n"));
 					} else if (fstreq(args[2], F("off"))) {
 						settings.serial_log = false;
-						save_settings();
+						settings.save();
 						printf(F("Serial log disabled.\n"));
 					} else {
 						printf(F("Usage: 'set serial [on|off]'.\n"));
@@ -392,9 +312,9 @@ void command_loop() {
 void setup() {
 	// Serial Setup
 	Serial.begin(9600); /* Set baud rate. */
-	setup_serial_in_out(); /* Add printf support. */
+	io_setup(); /* Add printf support. */
 	// Load EEPROM Data
-	load_settings();
+	settings.load();
 	// Handle Commands
 	info(F("Type anything in the next 4s to enter command mode.\n"));
 	for (size_t i = 0; i < 4 * 4; i++) {
@@ -423,7 +343,7 @@ void setup() {
 		low_power_sleep_minutes(settings.recording_delay);
 		/* Reset wait time. */
 		settings.recording_delay = 0;
-		save_settings();
+		settings.save();
 	}
 	// Activate Components
 #ifdef PIN_COMPONENT_SWITCH
