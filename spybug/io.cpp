@@ -1,3 +1,6 @@
+// Copyright 2022 Darwin Schuppan <darwin@nobrain.org>
+// SPDX license identifier: MIT
+
 #include "io.hh"
 
 static int serial_putch(char c, FILE *f) {

@@ -1,3 +1,6 @@
+// Copyright 2022 Darwin Schuppan <darwin@nobrain.org>
+// SPDX license identifier: MIT
+
 #include "fstr.hh"
 
 size_t fstrlen(const __FlashStringHelper *s) {
