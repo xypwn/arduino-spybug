@@ -121,9 +121,9 @@ static void command_loop() {
 						root.close();
 					} else if (n_args == 3 && fstreq(args[1], F("remove"))) {
 						if (SD.remove(args[2]))
-							printf(F("Deleted '%s'."), args[2]);
+							printf(F("Deleted '%s'.\n"), args[2]);
 						else
-							printf(F("Error removing '%s'."), args[2]);
+							printf(F("Error removing '%s'.\n"), args[2]);
 					} else if (n_args == 2 && fstreq(args[1], F("remove_all"))) {
 						File root = SD.open("/");
 						if (root) {
