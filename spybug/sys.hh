@@ -8,7 +8,7 @@
 #include <avr/wdt.h>
 #include <avr/sleep.h>
 
-static void (*full_reset)() = nullptr;
+extern void (*full_reset)();
 
 void low_power_sleep_minutes(unsigned long t);
 

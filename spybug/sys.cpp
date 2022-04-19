@@ -3,6 +3,8 @@
 
 #include "sys.hh"
 
+void (*full_reset)() = nullptr;
+
 static volatile bool wdt_int_sleep_mode = false;
 ISR (WDT_vect) {
 	if (wdt_int_sleep_mode)
