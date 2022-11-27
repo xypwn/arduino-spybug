@@ -182,7 +182,7 @@ static void command_loop() {
 }
 
 void cmd() {
-	printf(F("You are now in command mode. Reset to exit. Type 'help' for a list of commands.\n"));
+	printf(F("You are now in command mode. Type 'help' for a list of commands.\n"));
 	while (Serial.available()) Serial.read();
 	while (1) {
 		command_loop();
